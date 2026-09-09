@@ -6,20 +6,20 @@ import time
 import click
 
 from config import Settings
-from places_client import PlacesClient
+from maps_client import MapsClient
 from sheets_client import SheetsClient
 
 
-def _clients() -> tuple[PlacesClient, SheetsClient]:
+def _clients() -> tuple[MapsClient, SheetsClient, Settings]:
     settings = Settings.from_env()
-    places = PlacesClient(settings.places_api_key)
+    maps = MapsClient(headless=settings.headless)
     sheets = SheetsClient(
         settings.oauth_credentials_file,
         settings.oauth_token_file,
         settings.sheet_id,
         settings.sheet_tab,
     )
-    return places, sheets
+    return maps, sheets, settings
 
 
 @click.group()
@@ -36,11 +36,19 @@ def cli() -> None:
     help="City or address hint (e.g. Tbilisi)",
 )
 @click.option("--dry-run", is_flag=True, help="Print result without writing to Sheet")
-def add_business(name: str, location: str, dry_run: bool) -> None:
+@click.option(
+    "--show-browser",
+    is_flag=True,
+    help="Show the browser window (useful if Maps blocks headless)",
+)
+def add_business(name: str, location: str, dry_run: bool, show_browser: bool) -> None:
     """Search Maps and append one row to the spreadsheet."""
-    places, sheets = _clients()
+    maps, sheets, settings = _clients()
+    if show_browser:
+        maps = MapsClient(headless=False)
+
     click.echo(f"Looking up: {name!r}" + (f" near {location!r}" if location else ""))
-    result = places.lookup(name, location)
+    result = maps.lookup(name, location)
     if result is None:
         click.echo("No match found on Google Maps.", err=True)
         sys.exit(1)
@@ -68,15 +76,25 @@ def add_business(name: str, location: str, dry_run: bool) -> None:
 @cli.command("enrich")
 @click.option(
     "--delay",
-    default=0.4,
+    default=2.5,
     show_default=True,
-    help="Seconds between Places API calls",
+    help="Seconds between Maps lookups (keep this polite)",
 )
 @click.option("--dry-run", is_flag=True, help="Print matches without writing")
 @click.option("--limit", default=0, help="Max rows to process (0 = all)")
-def enrich_sheet(delay: float, dry_run: bool, limit: int) -> None:
+@click.option(
+    "--show-browser",
+    is_flag=True,
+    help="Show the browser window (useful if Maps blocks headless)",
+)
+def enrich_sheet(
+    delay: float, dry_run: bool, limit: int, show_browser: bool
+) -> None:
     """Fill Name on Maps / Verified Location / Phone for incomplete rows."""
-    places, sheets = _clients()
+    maps, sheets, _settings = _clients()
+    if show_browser:
+        maps = MapsClient(headless=False)
+
     pending = sheets.rows_needing_enrichment()
     if limit > 0:
         pending = pending[:limit]
@@ -91,8 +109,8 @@ def enrich_sheet(delay: float, dry_run: bool, limit: int) -> None:
     for item in pending:
         label = f"row {item['row']}: {item['name']}"
         try:
-            result = places.lookup(item["name"], item["location"])
-        except Exception as exc:  # noqa: BLE001 — surface API errors per row
+            result = maps.lookup(item["name"], item["location"])
+        except Exception as exc:  # noqa: BLE001 — surface errors per row
             click.echo(f"  FAIL {label} — {exc}", err=True)
             failed += 1
             time.sleep(delay)

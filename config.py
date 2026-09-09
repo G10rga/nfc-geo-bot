@@ -21,15 +21,14 @@ def _resolve_path(value: str, default_name: str) -> Path:
 
 @dataclass(frozen=True)
 class Settings:
-    places_api_key: str
     sheet_id: str
     sheet_tab: str
     oauth_credentials_file: Path
     oauth_token_file: Path
+    headless: bool
 
     @classmethod
     def from_env(cls) -> Settings:
-        places_key = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
         sheet_id = os.getenv("GOOGLE_SHEET_ID", "").strip()
         sheet_tab = os.getenv("GOOGLE_SHEET_TAB", "Sheet1").strip() or "Sheet1"
         oauth_credentials = _resolve_path(
@@ -40,10 +39,13 @@ class Settings:
             os.getenv("GOOGLE_OAUTH_TOKEN_FILE", ""),
             "token.json",
         )
+        headless = os.getenv("MAPS_HEADLESS", "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+        }
 
         missing = []
-        if not places_key or places_key.startswith("your_"):
-            missing.append("GOOGLE_PLACES_API_KEY")
         if not sheet_id or sheet_id.startswith("your_"):
             missing.append("GOOGLE_SHEET_ID")
         if not oauth_credentials.exists():
@@ -60,9 +62,9 @@ class Settings:
             )
 
         return cls(
-            places_api_key=places_key,
             sheet_id=sheet_id,
             sheet_tab=sheet_tab,
             oauth_credentials_file=oauth_credentials,
             oauth_token_file=oauth_token,
+            headless=headless,
         )
