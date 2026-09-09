@@ -14,7 +14,8 @@ def _clients() -> tuple[PlacesClient, SheetsClient]:
     settings = Settings.from_env()
     places = PlacesClient(settings.places_api_key)
     sheets = SheetsClient(
-        settings.service_account_file,
+        settings.oauth_credentials_file,
+        settings.oauth_token_file,
         settings.sheet_id,
         settings.sheet_tab,
     )
