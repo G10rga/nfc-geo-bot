@@ -69,8 +69,12 @@ class SheetsClient:
         self.worksheet.append_row(row, value_input_option="USER_ENTERED")
         return len(self.worksheet.get_all_values())
 
-    def rows_needing_enrichment(self) -> list[dict[str, Any]]:
-        """Rows with Name set but missing Name on Maps or Phone."""
+    def rows_needing_enrichment(
+        self, *, fix_locations: bool = False
+    ) -> list[dict[str, Any]]:
+        """Rows missing Maps/phone, or (optionally) missing City, District in Location."""
+        from location_utils import has_district
+
         records = self.worksheet.get_all_records()
         pending: list[dict[str, Any]] = []
         for idx, record in enumerate(records, start=2):  # row 1 = headers
@@ -79,13 +83,16 @@ class SheetsClient:
                 continue
             maps_name = str(record.get("Name on Maps") or "").strip()
             phone = str(record.get("Phone") or "").strip()
-            if maps_name and phone:
+            location = str(record.get("Location") or "").strip()
+            needs_maps = not (maps_name and phone)
+            needs_location = fix_locations and not has_district(location)
+            if not needs_maps and not needs_location:
                 continue
             pending.append(
                 {
                     "row": idx,
                     "name": name,
-                    "location": str(record.get("Location") or "").strip(),
+                    "location": location,
                     "sold": str(record.get("Sold") or "").strip(),
                     "name_on_maps": maps_name,
                     "verified_location": str(
@@ -99,11 +106,17 @@ class SheetsClient:
     def update_enrichment(
         self,
         row: int,
+        general_location: str,
         name_on_maps: str,
         verified_location: str,
         phone: str,
     ) -> None:
-        # D=Name on Maps, E=Verified Location, F=Phone
+        # B=Location, D=Name on Maps, E=Verified Location, F=Phone
+        self.worksheet.update(
+            f"B{row}",
+            [[general_location]],
+            value_input_option="USER_ENTERED",
+        )
         self.worksheet.update(
             f"D{row}:F{row}",
             [[name_on_maps, verified_location, phone]],

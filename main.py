@@ -33,7 +33,7 @@ def cli() -> None:
     "--location",
     "-l",
     default="",
-    help="City or address hint (e.g. Tbilisi)",
+    help="City hint for search (e.g. Tbilisi). District is filled automatically.",
 )
 @click.option("--dry-run", is_flag=True, help="Print result without writing to Sheet")
 @click.option(
@@ -53,8 +53,9 @@ def add_business(name: str, location: str, dry_run: bool, show_browser: bool) ->
         click.echo("No match found on Google Maps.", err=True)
         sys.exit(1)
 
+    click.echo(f"  Location     : {result.general_location}")
     click.echo(f"  Name on Maps : {result.name_on_maps}")
-    click.echo(f"  Address      : {result.verified_location}")
+    click.echo(f"  Exact addr   : {result.verified_location}")
     click.echo(f"  Phone        : {result.phone or '(none)'}")
     if result.website:
         click.echo(f"  Website      : {result.website}")
@@ -65,7 +66,7 @@ def add_business(name: str, location: str, dry_run: bool, show_browser: bool) ->
 
     row_num = sheets.append_business(
         name=name,
-        location=location,
+        location=result.general_location,
         name_on_maps=result.name_on_maps,
         verified_location=result.verified_location,
         phone=result.phone,
@@ -83,24 +84,33 @@ def add_business(name: str, location: str, dry_run: bool, show_browser: bool) ->
 @click.option("--dry-run", is_flag=True, help="Print matches without writing")
 @click.option("--limit", default=0, help="Max rows to process (0 = all)")
 @click.option(
+    "--fix-locations",
+    is_flag=True,
+    help="Also refresh Location for rows that only have the city (e.g. Tbilisi)",
+)
+@click.option(
     "--show-browser",
     is_flag=True,
     help="Show the browser window (useful if Maps blocks headless)",
 )
 def enrich_sheet(
-    delay: float, dry_run: bool, limit: int, show_browser: bool
+    delay: float,
+    dry_run: bool,
+    limit: int,
+    fix_locations: bool,
+    show_browser: bool,
 ) -> None:
-    """Fill Name on Maps / Verified Location / Phone for incomplete rows."""
+    """Fill Location / Name on Maps / Verified Location / Phone for incomplete rows."""
     maps, sheets, _settings = _clients()
     if show_browser:
         maps = MapsClient(headless=False)
 
-    pending = sheets.rows_needing_enrichment()
+    pending = sheets.rows_needing_enrichment(fix_locations=fix_locations)
     if limit > 0:
         pending = pending[:limit]
 
     if not pending:
-        click.echo("Nothing to enrich — all named rows already have Maps + phone.")
+        click.echo("Nothing to enrich.")
         return
 
     click.echo(f"Enriching {len(pending)} row(s)...")
@@ -109,7 +119,7 @@ def enrich_sheet(
     for item in pending:
         label = f"row {item['row']}: {item['name']}"
         try:
-            result = maps.lookup(item["name"], item["location"])
+            result = maps.lookup(item["name"], item["location"] or "Tbilisi")
         except Exception as exc:  # noqa: BLE001 — surface errors per row
             click.echo(f"  FAIL {label} — {exc}", err=True)
             failed += 1
@@ -123,12 +133,13 @@ def enrich_sheet(
             continue
 
         click.echo(
-            f"  OK   {label} → {result.name_on_maps} | "
-            f"{result.phone or 'no phone'}"
+            f"  OK   {label} → {result.general_location} | "
+            f"{result.name_on_maps} | {result.phone or 'no phone'}"
         )
         if not dry_run:
             sheets.update_enrichment(
                 item["row"],
+                result.general_location,
                 result.name_on_maps,
                 result.verified_location,
                 result.phone,

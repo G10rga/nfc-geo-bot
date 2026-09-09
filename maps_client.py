@@ -7,6 +7,8 @@ from urllib.parse import quote_plus
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
+from location_utils import format_general_location
+
 # Sidebar title when Maps shows a list, not a single place (any language).
 _RESULTS_TITLES = {
     "results",
@@ -23,6 +25,7 @@ _RESULTS_TITLES = {
 class PlaceResult:
     name_on_maps: str
     verified_location: str
+    general_location: str
     phone: str
     website: str
 
@@ -63,7 +66,7 @@ class MapsClient:
                 self._wait_for_place_or_results(page)
                 self._open_first_result_if_needed(page)
                 self._wait_until_place_loaded(page)
-                result = self._extract_place(page)
+                result = self._extract_place(page, city_hint=location)
             finally:
                 browser.close()
 
@@ -174,7 +177,7 @@ class MapsClient:
     def _is_results_title(title: str) -> bool:
         return title.strip().casefold() in _RESULTS_TITLES
 
-    def _extract_place(self, page) -> PlaceResult:
+    def _extract_place(self, page, city_hint: str = "") -> PlaceResult:
         name = self._read_h1(page)
         if self._is_results_title(name):
             # Sometimes the place name is the second heading.
@@ -214,12 +217,36 @@ class MapsClient:
         if self._is_results_title(name):
             name = ""
 
+        page_text = self._sidebar_text(page)
+        general = format_general_location(
+            city_hint=city_hint,
+            address=address,
+            page_text=page_text,
+        )
+
         return PlaceResult(
             name_on_maps=name,
             verified_location=address,
+            general_location=general,
             phone=phone,
             website=website,
         )
+
+    def _sidebar_text(self, page) -> str:
+        """Grab visible place-panel text so district names can be detected."""
+        selectors = [
+            'div[role="main"]',
+            'button[data-item-id="address"]',
+        ]
+        chunks: list[str] = []
+        for selector in selectors:
+            try:
+                loc = page.locator(selector).first
+                if loc.count():
+                    chunks.append(loc.inner_text(timeout=2000))
+            except Exception:  # noqa: BLE001
+                continue
+        return "\n".join(chunks)
 
     def _aria_or_text(self, page, selectors: list[str]) -> str:
         for selector in selectors:
