@@ -34,8 +34,13 @@ First run opens a browser to sign in; then `token.json` is saved.
 python main.py add "urban fitness" -l "Tbilisi" --dry-run
 python main.py add "urban fitness" -l "Tbilisi"
 python main.py enrich --limit 5 --dry-run
-python main.py enrich --show-browser
+python main.py enrich --fix-locations --show-browser
 ```
+
+- **Location (column B)** → general area like `Tbilisi, Saburtalo`
+- **Verified Location (column E)** → exact street address
+- `-l Tbilisi` is only a search hint; district is detected from Maps when possible
+- `--fix-locations` rewrites rows that still only say `Tbilisi` in column B
 
 Use `--show-browser` if headless mode gets blocked or stuck on a consent page.
 
