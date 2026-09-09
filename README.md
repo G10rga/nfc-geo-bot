@@ -21,14 +21,23 @@ copy .env.example .env
 3. Enable **Places API (New)**
 4. Create an API key → put it in `.env` as `GOOGLE_PLACES_API_KEY`
 
-### 3. Google Sheets access (service account)
+### 3. Google Sheets access (OAuth — your Google account)
 
-1. In the same Cloud project: **APIs & Services → Enable Google Sheets API** (and Drive API)
-2. **IAM → Service accounts → Create** → download JSON key
-3. Save the file as `service_account.json` in this folder
-4. Open your spreadsheet → **Share** → add the service account email (`...@....iam.gserviceaccount.com`) as **Editor**
+No service-account key needed (works when org policy blocks key creation).
+
+1. In the same Cloud project: enable **Google Sheets API** and **Google Drive API**
+2. **APIs & Services → OAuth consent screen**
+   - User type: **External** (or Internal if on Workspace)
+   - App name: e.g. `NFC Geo Bot`
+   - Add your email as a test user
+3. **APIs & Services → Credentials → Create credentials → OAuth client ID**
+   - Application type: **Desktop app**
+   - Download the JSON
+4. Save it in this folder as `credentials.json`
 5. Put the Sheet ID (from the URL) in `.env` as `GOOGLE_SHEET_ID`
-6. Set `GOOGLE_SHEET_TAB` to your tab name (default `NFC Geo`)
+6. Set `GOOGLE_SHEET_TAB` to your tab name (often `Sheet1`)
+
+First time you run a command, a browser opens — sign in with the Google account that **owns or can edit** the spreadsheet. A `token.json` file is saved so you won’t need to log in every time.
 
 ## Usage
 
@@ -51,3 +60,4 @@ python main.py enrich --limit 10 --dry-run
 - Uses the official Places API (not browser scraping).
 - First successful `enrich`/`add` ensures a **Phone** column in column F.
 - `Sold` is left blank for you to fill manually.
+- Keep `credentials.json` and `token.json` private (they are gitignored).

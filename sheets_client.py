@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any
 
 import gspread
-from google.oauth2.service_account import Credentials
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -23,11 +22,20 @@ HEADERS = [
 
 
 class SheetsClient:
-    def __init__(self, service_account_file: Path, sheet_id: str, tab_name: str) -> None:
-        creds = Credentials.from_service_account_file(
-            str(service_account_file), scopes=SCOPES
+    def __init__(
+        self,
+        oauth_credentials_file: Path,
+        oauth_token_file: Path,
+        sheet_id: str,
+        tab_name: str,
+    ) -> None:
+        # First run opens a browser to sign in with your Google account.
+        # Later runs reuse token.json automatically.
+        self.gc = gspread.oauth(
+            credentials_filename=str(oauth_credentials_file),
+            authorized_user_filename=str(oauth_token_file),
+            scopes=SCOPES,
         )
-        self.gc = gspread.authorize(creds)
         self.spreadsheet = self.gc.open_by_key(sheet_id)
         self.worksheet = self._open_or_create_tab(tab_name)
         self._ensure_headers()
