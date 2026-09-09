@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+import sys
+import time
+
+import click
+
+from config import Settings
+from places_client import PlacesClient
+from sheets_client import SheetsClient
+
+
+def _clients() -> tuple[PlacesClient, SheetsClient]:
+    settings = Settings.from_env()
+    places = PlacesClient(settings.places_api_key)
+    sheets = SheetsClient(
+        settings.service_account_file,
+        settings.sheet_id,
+        settings.sheet_tab,
+    )
+    return places, sheets
+
+
+@click.group()
+def cli() -> None:
+    """NFC Geo bot — look up businesses on Google Maps and fill your Sheet."""
+
+
+@cli.command("add")
+@click.argument("name")
+@click.option(
+    "--location",
+    "-l",
+    default="",
+    help="City or address hint (e.g. Tbilisi)",
+)
+@click.option("--dry-run", is_flag=True, help="Print result without writing to Sheet")
+def add_business(name: str, location: str, dry_run: bool) -> None:
+    """Search Maps and append one row to the spreadsheet."""
+    places, sheets = _clients()
+    click.echo(f"Looking up: {name!r}" + (f" near {location!r}" if location else ""))
+    result = places.lookup(name, location)
+    if result is None:
+        click.echo("No match found on Google Maps.", err=True)
+        sys.exit(1)
+
+    click.echo(f"  Name on Maps : {result.name_on_maps}")
+    click.echo(f"  Address      : {result.verified_location}")
+    click.echo(f"  Phone        : {result.phone or '(none)'}")
+    if result.website:
+        click.echo(f"  Website      : {result.website}")
+
+    if dry_run:
+        click.echo("Dry run — not writing to Sheet.")
+        return
+
+    row_num = sheets.append_business(
+        name=name,
+        location=location,
+        name_on_maps=result.name_on_maps,
+        verified_location=result.verified_location,
+        phone=result.phone,
+    )
+    click.echo(f"Wrote row {row_num}.")
+
+
+@cli.command("enrich")
+@click.option(
+    "--delay",
+    default=0.4,
+    show_default=True,
+    help="Seconds between Places API calls",
+)
+@click.option("--dry-run", is_flag=True, help="Print matches without writing")
+@click.option("--limit", default=0, help="Max rows to process (0 = all)")
+def enrich_sheet(delay: float, dry_run: bool, limit: int) -> None:
+    """Fill Name on Maps / Verified Location / Phone for incomplete rows."""
+    places, sheets = _clients()
+    pending = sheets.rows_needing_enrichment()
+    if limit > 0:
+        pending = pending[:limit]
+
+    if not pending:
+        click.echo("Nothing to enrich — all named rows already have Maps + phone.")
+        return
+
+    click.echo(f"Enriching {len(pending)} row(s)...")
+    ok = skipped = failed = 0
+
+    for item in pending:
+        label = f"row {item['row']}: {item['name']}"
+        try:
+            result = places.lookup(item["name"], item["location"])
+        except Exception as exc:  # noqa: BLE001 — surface API errors per row
+            click.echo(f"  FAIL {label} — {exc}", err=True)
+            failed += 1
+            time.sleep(delay)
+            continue
+
+        if result is None:
+            click.echo(f"  SKIP {label} — no Maps match")
+            skipped += 1
+            time.sleep(delay)
+            continue
+
+        click.echo(
+            f"  OK   {label} → {result.name_on_maps} | "
+            f"{result.phone or 'no phone'}"
+        )
+        if not dry_run:
+            sheets.update_enrichment(
+                item["row"],
+                result.name_on_maps,
+                result.verified_location,
+                result.phone,
+            )
+        ok += 1
+        time.sleep(delay)
+
+    click.echo(f"Done. ok={ok} skipped={skipped} failed={failed}")
+
+
+if __name__ == "__main__":
+    cli()
