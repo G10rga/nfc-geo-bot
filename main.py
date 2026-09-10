@@ -6,7 +6,7 @@ import time
 import click
 
 from config import Settings
-from maps_client import MapsClient
+from maps_client import NO_PHONE, MapsClient
 from sheets_client import SheetsClient
 
 
@@ -56,7 +56,7 @@ def add_business(name: str, location: str, dry_run: bool, show_browser: bool) ->
     click.echo(f"  Location     : {result.general_location}")
     click.echo(f"  Name on Maps : {result.name_on_maps}")
     click.echo(f"  Exact addr   : {result.verified_location}")
-    click.echo(f"  Phone        : {result.phone or '(none)'}")
+    click.echo(f"  Phone        : {result.phone}")
     if result.website:
         click.echo(f"  Website      : {result.website}")
 
@@ -118,6 +118,19 @@ def enrich_sheet(
 
     for item in pending:
         label = f"row {item['row']}: {item['name']}"
+
+        # Already has Name on Maps; only fill blank phone cells.
+        if (
+            item.get("needs_phone_placeholder")
+            and not item.get("needs_maps")
+            and not item.get("needs_location")
+        ):
+            click.echo(f"  OK   {label} → phone = {NO_PHONE}")
+            if not dry_run:
+                sheets.update_phone_placeholder(item["row"])
+            ok += 1
+            continue
+
         try:
             result = maps.lookup(item["name"], item["location"] or "Tbilisi")
         except Exception as exc:  # noqa: BLE001 — surface errors per row
@@ -134,7 +147,7 @@ def enrich_sheet(
 
         click.echo(
             f"  OK   {label} → {result.general_location} | "
-            f"{result.name_on_maps} | {result.phone or 'no phone'}"
+            f"{result.name_on_maps} | {result.phone}"
         )
         if not dry_run:
             sheets.update_enrichment(

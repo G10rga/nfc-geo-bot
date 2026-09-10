@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, unquote
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
@@ -19,6 +19,8 @@ _RESULTS_TITLES = {
     "risultati",
     "результаты",
 }
+
+NO_PHONE = "no number stated"
 
 
 @dataclass(frozen=True)
@@ -64,9 +66,13 @@ class MapsClient:
                 page.goto(url, wait_until="domcontentloaded")
                 self._dismiss_consent(page)
                 self._wait_for_place_or_results(page)
-                self._open_first_result_if_needed(page)
+                link_name = self._open_first_result_if_needed(page)
                 self._wait_until_place_loaded(page)
-                result = self._extract_place(page, city_hint=location)
+                result = self._extract_place(
+                    page,
+                    city_hint=location,
+                    fallback_name=link_name or name.strip(),
+                )
             finally:
                 browser.close()
 
@@ -121,23 +127,24 @@ class MapsClient:
             return False
         return False
 
-    def _open_first_result_if_needed(self, page) -> None:
+    def _open_first_result_if_needed(self, page) -> str:
+        """Open first result if needed; return a name hint from the clicked link."""
         if self._is_on_place_page(page):
-            # Still might be a results h1 with no details yet — check title.
-            title = self._read_h1(page)
+            title = self._read_place_name(page)
             if title and not self._is_results_title(title):
-                return
+                return title
 
-        # Prefer links inside the results feed (avoids map pins / unrelated links).
         candidates = [
             'div[role="feed"] a[href*="/maps/place/"]',
             'a[href*="/maps/place/"]',
         ]
+        link_name = ""
         clicked = False
         for selector in candidates:
             link = page.locator(selector).first
             try:
                 if link.is_visible(timeout=4000):
+                    link_name = self._name_from_result_link(link)
                     link.click(timeout=5000)
                     clicked = True
                     break
@@ -147,46 +154,97 @@ class MapsClient:
                 continue
 
         if not clicked:
-            return
+            return link_name
 
         try:
             page.wait_for_url(re.compile(r".*/maps/place/.*"), timeout=self.timeout_ms)
         except PlaywrightTimeout:
             pass
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(1800)
+        return link_name
 
     def _wait_until_place_loaded(self, page) -> None:
         try:
             page.wait_for_selector(
                 'button[data-item-id="address"], '
                 'button[data-item-id^="phone:"], '
-                'a[data-item-id="authority"]',
+                'a[data-item-id="authority"], '
+                "h1",
                 timeout=self.timeout_ms,
             )
+            page.wait_for_timeout(800)
         except PlaywrightTimeout:
-            # Place may have no phone/website; name-only is still useful.
             page.wait_for_timeout(1000)
 
-    def _read_h1(self, page) -> str:
+    def _read_place_name(self, page) -> str:
+        # Prefer real place headings; skip the Results list title.
         try:
-            return page.locator("h1").first.inner_text(timeout=4000).strip()
+            headings = page.locator("h1")
+            count = headings.count()
+            for i in range(count):
+                text = headings.nth(i).inner_text(timeout=2000).strip()
+                if text and not self._is_results_title(text):
+                    return text
         except Exception:  # noqa: BLE001
-            return ""
+            pass
+        return ""
 
     @staticmethod
     def _is_results_title(title: str) -> bool:
         return title.strip().casefold() in _RESULTS_TITLES
 
-    def _extract_place(self, page, city_hint: str = "") -> PlaceResult:
-        name = self._read_h1(page)
-        if self._is_results_title(name):
-            # Sometimes the place name is the second heading.
-            try:
-                headings = page.locator("h1")
-                if headings.count() > 1:
-                    name = headings.nth(1).inner_text().strip()
-            except Exception:  # noqa: BLE001
-                name = ""
+    @staticmethod
+    def _name_from_result_link(link) -> str:
+        try:
+            aria = (link.get_attribute("aria-label") or "").strip()
+            if aria:
+                # Often "Place Name, Category, 4.5 stars, ..."
+                return aria.split(",")[0].strip()
+            text = link.inner_text().strip()
+            if text:
+                return text.split("\n")[0].strip()
+        except Exception:  # noqa: BLE001
+            return ""
+        return ""
+
+    @staticmethod
+    def _name_from_url(url: str) -> str:
+        match = re.search(r"/maps/place/([^/@]+)", url)
+        if not match:
+            return ""
+        raw = unquote(match.group(1)).replace("+", " ").strip()
+        # Drop trailing noise like data ids if any slipped in.
+        raw = raw.split("?")[0].strip()
+        if not raw or raw.casefold() in _RESULTS_TITLES:
+            return ""
+        return raw
+
+    @staticmethod
+    def _name_from_document_title(page) -> str:
+        try:
+            title = (page.title() or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
+        for suffix in (" - Google Maps", " – Google Maps", " | Google Maps"):
+            if suffix in title:
+                name = title.split(suffix)[0].strip()
+                if name and name.casefold() not in _RESULTS_TITLES:
+                    return name
+        return ""
+
+    def _extract_place(
+        self,
+        page,
+        city_hint: str = "",
+        fallback_name: str = "",
+    ) -> PlaceResult:
+        name = self._read_place_name(page)
+        if not name:
+            name = self._name_from_document_title(page)
+        if not name:
+            name = self._name_from_url(page.url)
+        if not name and fallback_name and not self._is_results_title(fallback_name):
+            name = fallback_name.strip()
 
         address = self._aria_or_text(
             page,
@@ -204,7 +262,7 @@ class MapsClient:
                 'button[aria-label*="Phone"]',
             ],
         )
-        phone = self._normalize_phone(phone)
+        phone = self._normalize_phone(phone) or NO_PHONE
 
         website = ""
         try:
