@@ -5,6 +5,8 @@ from typing import Any
 
 import gspread
 
+from maps_client import NO_PHONE
+
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -19,6 +21,13 @@ HEADERS = [
     "Verified Location",
     "Phone",
 ]
+
+
+def _phone_for_sheet(phone: str) -> str:
+    text = (phone or "").strip()
+    if not text or text.casefold() in {"(none)", "none", "n/a", "na"}:
+        return NO_PHONE
+    return text
 
 
 class SheetsClient:
@@ -65,14 +74,21 @@ class SheetsClient:
         phone: str,
         sold: str = "",
     ) -> int:
-        row = [name, location, sold, name_on_maps, verified_location, phone]
+        row = [
+            name,
+            location,
+            sold,
+            name_on_maps,
+            verified_location,
+            _phone_for_sheet(phone),
+        ]
         self.worksheet.append_row(row, value_input_option="USER_ENTERED")
         return len(self.worksheet.get_all_values())
 
     def rows_needing_enrichment(
         self, *, fix_locations: bool = False
     ) -> list[dict[str, Any]]:
-        """Rows missing Maps/phone, or (optionally) missing City, District in Location."""
+        """Rows missing Name on Maps, or needing phone placeholder / district fix."""
         from location_utils import has_district
 
         records = self.worksheet.get_all_records()
@@ -83,11 +99,15 @@ class SheetsClient:
                 continue
             maps_name = str(record.get("Name on Maps") or "").strip()
             phone = str(record.get("Phone") or "").strip()
+            verified = str(record.get("Verified Location") or "").strip()
             location = str(record.get("Location") or "").strip()
-            needs_maps = not (maps_name and phone)
+
+            needs_maps = not maps_name
+            needs_phone_placeholder = bool(maps_name) and not phone
             needs_location = fix_locations and not has_district(location)
-            if not needs_maps and not needs_location:
+            if not needs_maps and not needs_phone_placeholder and not needs_location:
                 continue
+
             pending.append(
                 {
                     "row": idx,
@@ -95,13 +115,17 @@ class SheetsClient:
                     "location": location,
                     "sold": str(record.get("Sold") or "").strip(),
                     "name_on_maps": maps_name,
-                    "verified_location": str(
-                        record.get("Verified Location") or ""
-                    ).strip(),
+                    "verified_location": verified,
                     "phone": phone,
+                    "needs_maps": needs_maps,
+                    "needs_phone_placeholder": needs_phone_placeholder,
+                    "needs_location": needs_location,
                 }
             )
         return pending
+
+    def update_phone_placeholder(self, row: int) -> None:
+        self.worksheet.update_cell(row, 6, NO_PHONE)
 
     def update_enrichment(
         self,
@@ -111,14 +135,28 @@ class SheetsClient:
         verified_location: str,
         phone: str,
     ) -> None:
+        # Keep existing values when a re-scrape returns blanks.
+        existing = self.worksheet.row_values(row)
+        while len(existing) < 6:
+            existing.append("")
+
+        def prefer(new: str, old: str) -> str:
+            return new.strip() or old.strip()
+
+        location = prefer(general_location, existing[1] if len(existing) > 1 else "")
+        maps_name = prefer(name_on_maps, existing[3] if len(existing) > 3 else "")
+        verified = prefer(verified_location, existing[4] if len(existing) > 4 else "")
+        old_phone = existing[5] if len(existing) > 5 else ""
+        phone_val = _phone_for_sheet(prefer(phone, old_phone))
+
         # B=Location, D=Name on Maps, E=Verified Location, F=Phone
         self.worksheet.update(
             f"B{row}",
-            [[general_location]],
+            [[location]],
             value_input_option="USER_ENTERED",
         )
         self.worksheet.update(
             f"D{row}:F{row}",
-            [[name_on_maps, verified_location, phone]],
+            [[maps_name, verified, phone_val]],
             value_input_option="USER_ENTERED",
         )
